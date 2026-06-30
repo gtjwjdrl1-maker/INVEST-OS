@@ -1,0 +1,42 @@
+# ── 환경변수 / API 키 (절대 커밋 금지) ──────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── 가상환경 ──────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── Streamlit 캐시 ────────────────────────────────────────
+.streamlit/secrets.toml
+.streamlit/cache/
+
+# ── 데이터 / 로그 (용량 크거나 민감) ────────────────────
+data/*.csv
+data/*.json
+data/*.pkl
+logs/
+*.log
+
+# ── Claude / 로컬 설정 ───────────────────────────────────
+.claude/
+
+# ── OS / 에디터 ───────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
