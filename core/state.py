@@ -8,10 +8,44 @@ allocation_target(목표 배분)만 운용 정책값으로 유지한다.
 """
 from __future__ import annotations
 import os
+import json
 import streamlit as st
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from core import kis_client
+
+
+# ── 종목 감시 키워드 (M-3-1에서 저장, M-4-2에서 뉴스 매칭에 사용) ──────
+WATCHLIST_KEY = "m_watchlist"
+# 구조: { "삼성전자": ["HBM 수주", "파운드리 점유율", "메모리 가격"], ... }
+
+_WATCHLIST_FILE = Path(__file__).parent.parent / "data" / "watchlist.json"
+
+def _load_watchlist() -> dict:
+    """앱 시작 시 파일에서 watchlist 불러오기."""
+    try:
+        if _WATCHLIST_FILE.exists():
+            return json.loads(_WATCHLIST_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def load_watchlist() -> dict:
+    """세션 밖(CLI·스케줄러)에서 파일로부터 직접 watchlist를 읽는다."""
+    return _load_watchlist()
+
+
+def save_watchlist(watchlist: dict) -> None:
+    """watchlist를 파일에 저장 (앱 재시작 후에도 유지)."""
+    try:
+        _WATCHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _WATCHLIST_FILE.write_text(
+            json.dumps(watchlist, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+    except Exception:
+        pass
 
 
 @dataclass
@@ -122,6 +156,9 @@ def _apply_kis_portfolio(state: AppState) -> None:
 
 def get_state() -> AppState:
     """session_state에서 AppState를 가져오거나 초기화."""
+    # 앱 재시작 후에도 유지되도록 파일에서 로드
+    if WATCHLIST_KEY not in st.session_state:
+        st.session_state[WATCHLIST_KEY] = _load_watchlist()
     if "app_state" not in st.session_state:
         state = AppState()
         # 최초 1회만 KIS 조회 시도 (rerun마다 재호출 방지)

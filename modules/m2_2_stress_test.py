@@ -1,8 +1,13 @@
 """
-M-2-2 · VaR 리스크 분석 (m2_2_stress_test)
+M-2-2 · 리스크 분석 (m2_2_stress_test)
 
-포트폴리오의 역사적 VaR(Value at Risk)와 CVaR(Conditional VaR)를 계산한다.
-방법론: 역사적 시뮬레이션 (Historical Simulation)
+[Tab 1] VaR 분석
+  포트폴리오의 역사적 VaR(Value at Risk)와 CVaR(Conditional VaR)를 계산한다.
+  방법론: 역사적 시뮬레이션 (Historical Simulation)
+
+[Tab 2] 성과 리스크 — MOIC · MDD · 회복기간
+  개별 종목의 수익배수(MOIC), 최대낙폭(MDD), MDD 회복기간을 분석한다.
+
 데이터: yfinance (국내 종목 코드 → 자동으로 .KS 접미사 추가)
 """
 from __future__ import annotations
@@ -15,20 +20,21 @@ import yfinance as yf
 
 MODULE_ID = "m2_2_stress_test"
 MODULE_META = {
-    "title": "VaR 리스크 분석",
+    "title": "리스크 분석",
     "step": 2,
     "icon": "🎯",
     "default_visible": True,
-    "description": "포트폴리오 최대 예상 손실(VaR·CVaR) 계산",
+    "description": "포트폴리오 VaR·CVaR + 종목 MOIC·MDD·회복기간 분석",
 }
 
 _PERIOD_DAYS = {"1일": 1, "1주": 5, "1개월": 21}
 _DATA_PERIOD = {"1년": "1y", "2년": "2y", "3년": "3y"}
 _CACHE_KEY = "m2_2_var_cache"
+_PERF_CACHE_KEY = "m2_2_perf_cache"
 
 
 # ════════════════════════════════════════════════════════════════════
-# 유틸리티
+# 유틸리티 — VaR
 # ════════════════════════════════════════════════════════════════════
 
 def _to_yf_ticker(code: str) -> str:
@@ -50,7 +56,6 @@ def _fetch_prices(tickers: list[str], period: str) -> pd.DataFrame:
         try:
             hist = yf.Ticker(t).history(period=period, auto_adjust=True)
             if not hist.empty and "Close" in hist.columns:
-                # timezone 제거 (pd.concat 오류 방지)
                 close = hist["Close"]
                 if hasattr(close.index, "tz") and close.index.tz is not None:
                     close.index = close.index.tz_localize(None)
@@ -95,6 +100,44 @@ def _portfolio_returns(prices: pd.DataFrame, weights: dict[str, float]) -> pd.Se
 
 
 # ════════════════════════════════════════════════════════════════════
+# 유틸리티 — MOIC · MDD · 회복기간
+# ════════════════════════════════════════════════════════════════════
+
+def _calc_mdd_metrics(prices: pd.Series) -> dict:
+    """MDD · 낙폭 구간 · 회복기간 계산."""
+    if prices.empty or len(prices) < 5:
+        return {}
+    roll_max = prices.cummax()
+    drawdown = (prices - roll_max) / roll_max
+    mdd_pct = float(drawdown.min())
+    trough_date = drawdown.idxmin()
+    peak_series = roll_max[:trough_date]
+    peak_date = peak_series.idxmax() if not peak_series.empty else trough_date
+    peak_price = float(prices[peak_date])
+    trough_price = float(prices[trough_date])
+    drawdown_days = (trough_date - peak_date).days
+    # 회복: trough 이후 전고점 이상 재도달 시점
+    after_trough = prices[trough_date:]
+    recovered = after_trough[after_trough >= peak_price]
+    if len(recovered) > 0:
+        recovery_date = recovered.index[0]
+        recovery_days = (recovery_date - trough_date).days
+    else:
+        recovery_date = None
+        recovery_days = None
+    return {
+        "mdd_pct": mdd_pct,
+        "peak_date": peak_date,
+        "peak_price": peak_price,
+        "trough_date": trough_date,
+        "trough_price": trough_price,
+        "drawdown_days": drawdown_days,
+        "recovery_date": recovery_date,
+        "recovery_days": recovery_days,
+    }
+
+
+# ════════════════════════════════════════════════════════════════════
 # 렌더 헬퍼
 # ════════════════════════════════════════════════════════════════════
 
@@ -108,6 +151,21 @@ def _red_card(col, label: str, value: str, note: str = "") -> None:
         padding:16px;text-align:center;min-height:80px'>
         <div style='font-size:11px;color:#6b7280;letter-spacing:0.3px'>{label}</div>
         <div style='font-size:26px;font-weight:700;color:#dc2626;margin-top:6px'>{value}</div>
+        {sub}</div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def _perf_card(col, label: str, value: str, note: str = "", color: str = "#1d4ed8") -> None:
+    sub = (
+        f"<div style='font-size:11px;color:#9ca3af;margin-top:3px'>{note}</div>"
+        if note else ""
+    )
+    col.markdown(
+        f"""<div style='background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;
+        padding:16px;text-align:center;min-height:80px'>
+        <div style='font-size:11px;color:#6b7280;letter-spacing:0.3px'>{label}</div>
+        <div style='font-size:26px;font-weight:700;color:{color};margin-top:6px'>{value}</div>
         {sub}</div>""",
         unsafe_allow_html=True,
     )
@@ -139,17 +197,12 @@ def _comparison_html(
             fw = "font-weight:700;" if selected else ""
             amount_str = f"{amount:,}원" if total_value > 0 else "-"
 
-            kv_n, kc_n = None, None
+            kv_n = None
             if kospi_cache[conf][0] is not None:
                 kv_n = kospi_cache[conf][0] * np.sqrt(n)
-                kc_n = kospi_cache[conf][1] * np.sqrt(n)
 
             kospi_str = f"{abs(kv_n)*100:.2f}%" if kv_n is not None else "-"
-
-            if kv_n is not None:
-                color = "#dc2626" if abs(var_n) > abs(kv_n) else "#16a34a"
-            else:
-                color = "#dc2626"
+            color = "#dc2626" if (kv_n is None or abs(var_n) > abs(kv_n)) else "#16a34a"
 
             rows_html += (
                 f"<tr style='background:{bg};{fw}'>"
@@ -273,247 +326,430 @@ def _contribution_html(
 # ════════════════════════════════════════════════════════════════════
 
 def render(state) -> None:
-    st.subheader("🎯 VaR 리스크 분석", divider="gray")
+    st.subheader("🎯 리스크 분석", divider="gray")
 
-    # ── 1. 파라미터 설정 UI (항상 표시) ─────────────────────────────
-    with st.container(border=True):
-        st.markdown("**⚙️ 분석 파라미터**")
-        col1, col2, col3 = st.columns(3)
+    tab_var, tab_perf = st.tabs(["📊 VaR 분석", "📐 성과 리스크 (MOIC · MDD · 회복기간)"])
 
-        with col1:
-            conf_label = st.radio(
-                "신뢰수준", ["95%", "99%"], horizontal=True, key="var_conf"
-            )
-            if conf_label == "95%":
-                st.caption("하루 손실이 이 수치를 초과할 확률 5%")
-            else:
-                st.caption("하루 손실이 이 수치를 초과할 확률 1% (더 보수적)")
+    # ══════════════════════════════════════════════════════════════
+    # Tab 1: VaR 분석 (기존 코드 유지)
+    # ══════════════════════════════════════════════════════════════
+    with tab_var:
+        # ── 1. 파라미터 설정 UI ───────────────────────────────────
+        with st.container(border=True):
+            st.markdown("**⚙️ 분석 파라미터**")
+            col1, col2, col3 = st.columns(3)
 
-        with col2:
-            period_label = st.radio(
-                "보유기간", ["1일", "1주", "1개월"], horizontal=True, key="var_period"
-            )
-            st.caption("기간이 길수록 VaR 수치가 커짐 (√기간 비례)")
+            with col1:
+                conf_label = st.radio(
+                    "신뢰수준", ["95%", "99%"], horizontal=True, key="var_conf"
+                )
+                if conf_label == "95%":
+                    st.caption("하루 손실이 이 수치를 초과할 확률 5%")
+                else:
+                    st.caption("하루 손실이 이 수치를 초과할 확률 1% (더 보수적)")
 
-        with col3:
-            data_period_label = st.radio(
-                "과거 데이터", ["1년", "2년", "3년"],
-                horizontal=True, index=1, key="var_data_period",
-            )
-            st.caption("길수록 위기 구간 포함 확률 높아짐. 2년 권장")
+            with col2:
+                period_label = st.radio(
+                    "보유기간", ["1일", "1주", "1개월"], horizontal=True, key="var_period"
+                )
+                st.caption("기간이 길수록 VaR 수치가 커짐 (√기간 비례)")
 
-    confidence = int(conf_label.replace("%", ""))
-    n_days = _PERIOD_DAYS[period_label]
-    data_period = _DATA_PERIOD[data_period_label]
+            with col3:
+                data_period_label = st.radio(
+                    "과거 데이터", ["1년", "2년", "3년"],
+                    horizontal=True, index=1, key="var_data_period",
+                )
+                st.caption("길수록 위기 구간 포함 확률 높아짐. 2년 권장")
 
-    # ── 2. 분석 대상 선택 ────────────────────────────────────────────
-    kis_ok = state.kis_status.get("connected", False)
-    options = ["① 현재 포트폴리오 (KIS 실잔고)", "② 종목 직접 입력"]
+        confidence = int(conf_label.replace("%", ""))
+        n_days = _PERIOD_DAYS[period_label]
+        data_period = _DATA_PERIOD[data_period_label]
 
-    target = st.radio(
-        "분석 대상", options,
-        index=0 if kis_ok else 1,
-        key="var_target",
-        horizontal=True,
-    )
+        # ── 2. 분석 대상 선택 ─────────────────────────────────────
+        kis_ok = state.kis_status.get("connected", False)
+        options = ["① 현재 포트폴리오 (KIS 실잔고)", "② 종목 직접 입력"]
 
-    # KIS 미연결인데 ① 선택 → 자동으로 ② 전환
-    if target == options[0] and not kis_ok:
-        st.warning(
-            "KIS가 연결되어 있지 않습니다. **종목 직접 입력** 방식으로 전환합니다.  "
-            "(.env에 KIS_APP_KEY / KIS_APP_SECRET / KIS_ACCOUNT_NO를 입력하면 "
-            "실잔고를 불러올 수 있습니다.)"
+        target = st.radio(
+            "분석 대상", options,
+            index=0 if kis_ok else 1,
+            key="var_target",
+            horizontal=True,
         )
-        target = options[1]
 
-    # 분석 대상 파싱
-    tickers: list[str] = []
-    raw_weights: dict[str, float] = {}
-    names: dict[str, str] = {}
-    total_value: int = 0
-
-    if target == options[0]:
-        # KIS 실잔고 사용
-        holdings = state.holdings
-        if not holdings:
-            st.info(
-                "보유 종목이 없습니다. 사이드바에서 **잔고 새로고침**을 누르거나 "
-                "종목을 직접 입력하세요."
+        if target == options[0] and not kis_ok:
+            st.warning(
+                "KIS가 연결되어 있지 않습니다. **종목 직접 입력** 방식으로 전환합니다.  "
+                "(.env에 KIS_APP_KEY / KIS_APP_SECRET / KIS_ACCOUNT_NO를 입력하면 "
+                "실잔고를 불러올 수 있습니다.)"
             )
-            return
-        total_value = state.total_value
-        for h in holdings:
-            t = _to_yf_ticker(h.get("code", ""))
-            if not t:
-                continue
-            val = h.get("value") or (h.get("price", 0) * h.get("qty", 1))
-            tickers.append(t)
-            raw_weights[t] = float(val)
-            names[t] = h.get("name", t)
-        tw = sum(raw_weights.values())
-        if tw > 0:
-            raw_weights = {t: v / tw for t, v in raw_weights.items()}
+            target = options[1]
 
-    else:
-        # 종목 직접 입력
-        text_input = st.text_area(
-            "종목코드 및 비중 입력",
-            placeholder="종목코드, 비중%\n005930, 40\n000660, 30\n035420, 30",
-            height=120,
-            key="var_manual_input",
-        )
-        if text_input.strip():
-            for line in text_input.strip().splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) < 2:
-                    continue
-                try:
-                    w = float(parts[1])
-                except ValueError:
-                    continue
-                code = parts[0].strip()
-                t = _to_yf_ticker(code)
-                if not t or w <= 0:
-                    continue
-                tickers.append(t)
-                raw_weights[t] = w
-                names[t] = code  # 원래 입력 코드를 이름으로 보관
-            tw = sum(raw_weights.values())
-            if tw > 0:
-                raw_weights = {t: v / tw for t, v in raw_weights.items()}
+        tickers: list[str] = []
+        raw_weights: dict[str, float] = {}
+        names: dict[str, str] = {}
+        total_value: int = 0
 
-    run_btn = st.button("🎯 VaR 계산", type="primary", key="var_run_btn")
-
-    # ── 3. 계산 ──────────────────────────────────────────────────────
-    if run_btn:
-        if not tickers or not raw_weights:
-            st.error("분석할 종목이 없습니다. 종목코드와 비중을 입력한 후 다시 시도하세요.")
-        else:
-            with st.spinner(f"과거 {data_period_label} 가격 데이터 수집 중…"):
-                prices = _fetch_prices(tickers, data_period)
-
-            if prices.empty:
-                st.error(
-                    "가격 데이터를 가져오지 못했습니다. "
-                    "종목코드(국내: 6자리 숫자, 예 005930 → 005930.KS) 또는 "
-                    "네트워크를 확인하세요."
+        if target == options[0]:
+            holdings = state.holdings
+            if not holdings:
+                st.info(
+                    "보유 종목이 없습니다. 사이드바에서 **잔고 새로고침**을 누르거나 "
+                    "종목을 직접 입력하세요."
                 )
             else:
-                valid = [t for t in tickers if t in prices.columns]
-                missing = [t for t in tickers if t not in prices.columns]
-                if missing:
-                    st.warning(f"데이터를 가져오지 못한 종목: {', '.join(missing)}")
-                if not valid:
-                    st.error("유효한 종목 데이터가 없습니다.")
+                total_value = state.total_value
+                for h in holdings:
+                    t = _to_yf_ticker(h.get("code", ""))
+                    if not t:
+                        continue
+                    val = h.get("value") or (h.get("price", 0) * h.get("qty", 1))
+                    tickers.append(t)
+                    raw_weights[t] = float(val)
+                    names[t] = h.get("name", t)
+                tw = sum(raw_weights.values())
+                if tw > 0:
+                    raw_weights = {t: v / tw for t, v in raw_weights.items()}
+        else:
+            text_input = st.text_area(
+                "종목코드 및 비중 입력",
+                placeholder="종목코드, 비중%\n005930, 40\n000660, 30\n035420, 30",
+                height=120,
+                key="var_manual_input",
+            )
+            if text_input.strip():
+                for line in text_input.strip().splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) < 2:
+                        continue
+                    try:
+                        w = float(parts[1])
+                    except ValueError:
+                        continue
+                    code = parts[0].strip()
+                    t = _to_yf_ticker(code)
+                    if not t or w <= 0:
+                        continue
+                    tickers.append(t)
+                    raw_weights[t] = w
+                    names[t] = code
+                tw = sum(raw_weights.values())
+                if tw > 0:
+                    raw_weights = {t: v / tw for t, v in raw_weights.items()}
+
+        run_btn = st.button("🎯 VaR 계산", type="primary", key="var_run_btn")
+
+        # ── 3. 계산 ───────────────────────────────────────────────
+        if run_btn:
+            if not tickers or not raw_weights:
+                st.error("분석할 종목이 없습니다. 종목코드와 비중을 입력한 후 다시 시도하세요.")
+            else:
+                with st.spinner(f"과거 {data_period_label} 가격 데이터 수집 중…"):
+                    prices = _fetch_prices(tickers, data_period)
+
+                if prices.empty:
+                    st.error(
+                        "가격 데이터를 가져오지 못했습니다. "
+                        "종목코드(국내: 6자리 숫자, 예 005930 → 005930.KS) 또는 "
+                        "네트워크를 확인하세요."
+                    )
                 else:
-                    fw = {t: raw_weights[t] for t in valid}
-                    tw2 = sum(fw.values())
-                    if tw2 > 0:
-                        fw = {t: v / tw2 for t, v in fw.items()}
-
-                    port_rets = _portfolio_returns(prices[valid], fw)
-                    if len(port_rets) < 20:
-                        st.error(
-                            f"수익률 계산에 충분한 데이터가 없습니다 ({len(port_rets)}일). "
-                            "데이터 기간을 늘리거나 종목코드를 확인하세요."
-                        )
+                    valid = [t for t in tickers if t in prices.columns]
+                    missing = [t for t in tickers if t not in prices.columns]
+                    if missing:
+                        st.warning(f"데이터를 가져오지 못한 종목: {', '.join(missing)}")
+                    if not valid:
+                        st.error("유효한 종목 데이터가 없습니다.")
                     else:
-                        st.session_state[_CACHE_KEY] = {
-                            "port_rets": port_rets,
-                            "prices": prices[valid],
-                            "weights": fw,
-                            "names": names,
-                            "total_value": total_value,
-                            "data_period_label": data_period_label,
-                            "n_days_used": len(port_rets),
-                        }
+                        fw = {t: raw_weights[t] for t in valid}
+                        tw2 = sum(fw.values())
+                        if tw2 > 0:
+                            fw = {t: v / tw2 for t, v in fw.items()}
 
-    # ── 4. 결과 표시 ─────────────────────────────────────────────────
-    if _CACHE_KEY not in st.session_state:
-        st.info(
-            "파라미터와 분석 대상을 설정한 후 **🎯 VaR 계산** 버튼을 누르세요.  "
-            "yfinance로 과거 수익률을 수집해 VaR·CVaR를 계산합니다.",
-            icon="ℹ️",
-        )
-        return
+                        port_rets = _portfolio_returns(prices[valid], fw)
+                        if len(port_rets) < 20:
+                            st.error(
+                                f"수익률 계산에 충분한 데이터가 없습니다 ({len(port_rets)}일). "
+                                "데이터 기간을 늘리거나 종목코드를 확인하세요."
+                            )
+                        else:
+                            st.session_state[_CACHE_KEY] = {
+                                "port_rets": port_rets,
+                                "prices": prices[valid],
+                                "weights": fw,
+                                "names": names,
+                                "total_value": total_value,
+                                "data_period_label": data_period_label,
+                                "n_days_used": len(port_rets),
+                            }
 
-    cached = st.session_state[_CACHE_KEY]
-    port_rets: pd.Series = cached["port_rets"]
-    prices_c: pd.DataFrame = cached["prices"]
-    fw: dict[str, float] = cached["weights"]
-    names_c: dict[str, str] = cached["names"]
-    tv: int = cached["total_value"]
+        # ── 4. 결과 표시 ──────────────────────────────────────────
+        if _CACHE_KEY not in st.session_state:
+            st.info(
+                "파라미터와 분석 대상을 설정한 후 **🎯 VaR 계산** 버튼을 누르세요.  "
+                "yfinance로 과거 수익률을 수집해 VaR·CVaR를 계산합니다.",
+                icon="ℹ️",
+            )
+        else:
+            cached = st.session_state[_CACHE_KEY]
+            port_rets: pd.Series = cached["port_rets"]
+            prices_c: pd.DataFrame = cached["prices"]
+            fw: dict[str, float] = cached["weights"]
+            names_c: dict[str, str] = cached["names"]
+            tv: int = cached["total_value"]
 
-    # 데이터 기간이 바뀌었을 때 안내
-    if cached["data_period_label"] != data_period_label:
-        st.warning(
-            f"현재 선택한 과거 데이터 기간({data_period_label})이 "
-            f"마지막 계산({cached['data_period_label']})과 다릅니다. "
-            "🎯 VaR 계산을 다시 실행하면 새 데이터로 업데이트됩니다."
-        )
+            if cached["data_period_label"] != data_period_label:
+                st.warning(
+                    f"현재 선택한 과거 데이터 기간({data_period_label})이 "
+                    f"마지막 계산({cached['data_period_label']})과 다릅니다. "
+                    "🎯 VaR 계산을 다시 실행하면 새 데이터로 업데이트됩니다."
+                )
 
-    # 현재 UI 파라미터로 VaR/CVaR 계산 (실시간)
-    var_1d, cvar_1d = _calc_var(port_rets, confidence)
-    var_nd = var_1d * np.sqrt(n_days)
-    cvar_nd = cvar_1d * np.sqrt(n_days)
-    var_amount = int(abs(var_nd) * tv) if tv > 0 else 0
+            var_1d, cvar_1d = _calc_var(port_rets, confidence)
+            var_nd = var_1d * np.sqrt(n_days)
+            cvar_nd = cvar_1d * np.sqrt(n_days)
+            var_amount = int(abs(var_nd) * tv) if tv > 0 else 0
 
-    # ── [핵심 지표] ───────────────────────────────────────────────────
-    st.markdown("#### 📊 핵심 지표")
-    c1, c2, c3 = st.columns(3)
-    _red_card(c1, f"VaR ({conf_label} · {period_label})", f"{abs(var_nd) * 100:.2f}%")
-    _red_card(c2, f"CVaR ({conf_label} · {period_label})", f"{abs(cvar_nd) * 100:.2f}%")
-    if tv > 0:
-        _red_card(c3, "금액 환산", f"{var_amount:,}원", f"총 {tv:,}원 기준")
-    else:
-        _red_card(c3, "금액 환산", "-", "총 평가액 없음 (KIS 미연결)")
+            st.markdown("#### 📊 핵심 지표")
+            c1, c2, c3 = st.columns(3)
+            _red_card(c1, f"VaR ({conf_label} · {period_label})", f"{abs(var_nd) * 100:.2f}%")
+            _red_card(c2, f"CVaR ({conf_label} · {period_label})", f"{abs(cvar_nd) * 100:.2f}%")
+            if tv > 0:
+                _red_card(c3, "금액 환산", f"{var_amount:,}원", f"총 {tv:,}원 기준")
+            else:
+                _red_card(c3, "금액 환산", "-", "총 평가액 없음 (KIS 미연결)")
 
-    st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 자동 해석 문장 ─────────────────────────────────────────────
-    if tv > 0:
-        interp = (
-            f"**{conf_label} 신뢰수준**에서 {period_label} 최대 손실은 "
-            f"**{abs(var_nd)*100:.2f}%** ({var_amount:,}원)이며, "
-            f"최악의 상황에서는 평균 **{abs(cvar_nd)*100:.2f}%** 손실이 예상됩니다."
-        )
-    else:
-        interp = (
-            f"**{conf_label} 신뢰수준**에서 {period_label} 최대 손실은 "
-            f"**{abs(var_nd)*100:.2f}%**이며, "
-            f"최악의 상황에서는 평균 **{abs(cvar_nd)*100:.2f}%** 손실이 예상됩니다."
-        )
-    st.info(interp, icon="💡")
+            if tv > 0:
+                interp = (
+                    f"**{conf_label} 신뢰수준**에서 {period_label} 최대 손실은 "
+                    f"**{abs(var_nd)*100:.2f}%** ({var_amount:,}원)이며, "
+                    f"최악의 상황에서는 평균 **{abs(cvar_nd)*100:.2f}%** 손실이 예상됩니다."
+                )
+            else:
+                interp = (
+                    f"**{conf_label} 신뢰수준**에서 {period_label} 최대 손실은 "
+                    f"**{abs(var_nd)*100:.2f}%**이며, "
+                    f"최악의 상황에서는 평균 **{abs(cvar_nd)*100:.2f}%** 손실이 예상됩니다."
+                )
+            st.info(interp, icon="💡")
 
-    # ── [파라미터 변화 비교표] ────────────────────────────────────────
-    st.markdown("#### 📋 파라미터 변화 비교표")
-    st.caption("현재 선택한 조합은 파란 배경으로 표시됩니다.")
-    st.markdown(
-        _comparison_html(port_rets, confidence, period_label, tv, data_period),
-        unsafe_allow_html=True,
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("#### 📋 파라미터 변화 비교표")
+            st.caption("현재 선택한 조합은 파란 배경으로 표시됩니다.")
+            st.markdown(
+                _comparison_html(port_rets, confidence, period_label, tv, data_period),
+                unsafe_allow_html=True,
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── [수익률 분포 히스토그램] ──────────────────────────────────────
-    st.markdown("#### 📈 수익률 분포 히스토그램")
-    st.caption("주황 점선: 95% VaR  /  빨간 점선: 99% VaR  /  빨간 막대: 극단 손실 구간")
-    st.plotly_chart(_histogram(port_rets), use_container_width=True)
+            st.markdown("#### 📈 수익률 분포 히스토그램")
+            st.caption("주황 점선: 95% VaR  /  빨간 점선: 99% VaR  /  빨간 막대: 극단 손실 구간")
+            st.plotly_chart(_histogram(port_rets), use_container_width=True)
 
-    # ── [종목별 VaR 기여도] ───────────────────────────────────────────
-    st.markdown(f"#### 🔍 종목별 VaR 기여도 ({conf_label} 기준)")
-    st.caption("기여도(%) = 종목 개별 VaR × 비중의 상대 비율 / ⚠️ 가장 높은 기여 종목")
-    contrib = _contribution_html(prices_c, fw, confidence, names_c)
-    if contrib:
-        st.markdown(contrib, unsafe_allow_html=True)
-    else:
-        st.warning("종목별 기여도를 계산할 수 없습니다.")
+            st.markdown(f"#### 🔍 종목별 VaR 기여도 ({conf_label} 기준)")
+            st.caption("기여도(%) = 종목 개별 VaR × 비중의 상대 비율 / ⚠️ 가장 높은 기여 종목")
+            contrib = _contribution_html(prices_c, fw, confidence, names_c)
+            if contrib:
+                st.markdown(contrib, unsafe_allow_html=True)
+            else:
+                st.warning("종목별 기여도를 계산할 수 없습니다.")
 
-    st.divider()
-    st.caption(
-        f"데이터: {cached['data_period_label']} ({cached['n_days_used']}거래일)  ·  "
-        "방법론: 역사적 시뮬레이션 (Historical Simulation)  ·  "
-        "N일 VaR = 1일 VaR × √N  ·  소스: Yahoo Finance (yfinance)"
-    )
+            st.divider()
+            st.caption(
+                f"데이터: {cached['data_period_label']} ({cached['n_days_used']}거래일)  ·  "
+                "방법론: 역사적 시뮬레이션 (Historical Simulation)  ·  "
+                "N일 VaR = 1일 VaR × √N  ·  소스: Yahoo Finance (yfinance)"
+            )
+
+    # ══════════════════════════════════════════════════════════════
+    # Tab 2: 성과 리스크 — MOIC · MDD · 회복기간
+    # ══════════════════════════════════════════════════════════════
+    with tab_perf:
+        st.caption("개별 종목의 수익배수(MOIC), 최대낙폭(MDD), MDD 회복기간을 분석합니다.")
+
+        kis_ok2 = state.kis_status.get("connected", False)
+
+        with st.container(border=True):
+            st.markdown("**⚙️ 종목 입력**")
+            p1, p2 = st.columns(2)
+
+            with p1:
+                if kis_ok2 and state.holdings:
+                    holding_map = {
+                        f"{h.get('name', h.get('code', ''))} ({h.get('code', '')})": h
+                        for h in state.holdings if h.get("code")
+                    }
+                    sel_name = st.selectbox(
+                        "보유종목 선택", list(holding_map.keys()),
+                        key="perf_holding_select",
+                    )
+                    sel_h = holding_map[sel_name]
+                    perf_ticker = _to_yf_ticker(sel_h.get("code", ""))
+                    # KIS 매입평균가 (필드명 두 가지 대응)
+                    default_ep = float(
+                        sel_h.get("avg_price")
+                        or sel_h.get("pchs_avg_pric")
+                        or 0.0
+                    )
+                else:
+                    raw_code = st.text_input(
+                        "종목코드 (예: 005930)",
+                        placeholder="005930",
+                        key="perf_ticker_input",
+                    )
+                    perf_ticker = _to_yf_ticker(raw_code.strip()) if raw_code.strip() else ""
+                    default_ep = 0.0
+
+            with p2:
+                entry_price = st.number_input(
+                    "매수가 (원)",
+                    min_value=0.0,
+                    value=default_ep,
+                    step=100.0,
+                    format="%.0f",
+                    key="perf_entry_price",
+                    help="평균 매수단가. MOIC 계산에 사용됩니다. 0이면 MOIC 미표시.",
+                )
+                perf_period = st.radio(
+                    "분석 기간", ["1년", "2년", "3년"],
+                    horizontal=True, index=1, key="perf_data_period",
+                )
+
+        perf_run = st.button("📐 성과 분석", type="primary", key="perf_run_btn")
+
+        if perf_run:
+            if not perf_ticker:
+                st.error("종목코드를 입력하세요.")
+            else:
+                with st.spinner(f"{perf_ticker} 가격 데이터 수집 중…"):
+                    try:
+                        hist = yf.Ticker(perf_ticker).history(
+                            period=_DATA_PERIOD[perf_period], auto_adjust=True
+                        )
+                        if hist.empty or "Close" not in hist.columns:
+                            st.error("가격 데이터를 가져오지 못했습니다. 종목코드를 확인하세요.")
+                        else:
+                            close = hist["Close"]
+                            if hasattr(close.index, "tz") and close.index.tz is not None:
+                                close.index = close.index.tz_localize(None)
+                            current_price = float(close.iloc[-1])
+                            mdd_data = _calc_mdd_metrics(close)
+                            moic = current_price / entry_price if entry_price > 0 else None
+                            st.session_state[_PERF_CACHE_KEY] = {
+                                "ticker": perf_ticker,
+                                "close": close,
+                                "current_price": current_price,
+                                "entry_price": entry_price,
+                                "moic": moic,
+                                "mdd_data": mdd_data,
+                                "period": perf_period,
+                            }
+                    except Exception as e:
+                        st.error(f"데이터 조회 실패: {e}")
+
+        if _PERF_CACHE_KEY not in st.session_state:
+            st.info(
+                "종목코드와 매수가를 입력한 후 **📐 성과 분석** 버튼을 누르세요.",
+                icon="ℹ️",
+            )
+        else:
+            pc = st.session_state[_PERF_CACHE_KEY]
+            mdd_d = pc["mdd_data"]
+
+            if not mdd_d:
+                st.error("MDD 계산에 실패했습니다. 데이터가 충분한지 확인하세요.")
+            else:
+                # ── 핵심 지표 카드 ────────────────────────────────
+                st.markdown("#### 📊 성과 리스크 요약")
+                pc1, pc2, pc3 = st.columns(3)
+
+                # MOIC
+                moic_val = pc.get("moic")
+                if moic_val is not None:
+                    moic_color = "#16a34a" if moic_val >= 1.0 else "#dc2626"
+                    moic_note = f"수익률 {(moic_val - 1) * 100:+.1f}%"
+                    _perf_card(pc1, "MOIC (수익배수)", f"{moic_val:.2f}x", moic_note, moic_color)
+                else:
+                    _perf_card(pc1, "MOIC (수익배수)", "-", "매수가 미입력", "#6b7280")
+
+                # MDD
+                mdd_pct = mdd_d["mdd_pct"]
+                mdd_note = (
+                    f"{mdd_d['peak_date'].strftime('%y.%m.%d')} → "
+                    f"{mdd_d['trough_date'].strftime('%y.%m.%d')}"
+                    f" ({mdd_d['drawdown_days']}일)"
+                )
+                _red_card(pc2, "MDD (최대낙폭)", f"{mdd_pct * 100:.1f}%", mdd_note)
+
+                # 회복기간
+                if mdd_d["recovery_days"] is not None:
+                    rec_note = f"회복 완료 ({mdd_d['recovery_date'].strftime('%y.%m.%d')})"
+                    _perf_card(
+                        pc3, "MDD 회복기간",
+                        f"{mdd_d['recovery_days']}일",
+                        rec_note, "#7c3aed",
+                    )
+                else:
+                    _perf_card(pc3, "MDD 회복기간", "미회복", "전고점 미도달", "#dc2626")
+
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # ── 해석 문장 ─────────────────────────────────────
+                parts = []
+                if moic_val is not None:
+                    label = "수익" if moic_val >= 1 else "손실"
+                    parts.append(
+                        f"매수가 대비 현재 **{moic_val:.2f}x** ({label} {abs((moic_val - 1) * 100):.1f}%)"
+                    )
+                parts.append(
+                    f"분석 기간 중 최대낙폭 **{mdd_pct * 100:.1f}%** "
+                    f"({mdd_d['drawdown_days']}일간)"
+                )
+                if mdd_d["recovery_days"] is not None:
+                    parts.append(f"이후 **{mdd_d['recovery_days']}일** 만에 전고점 회복")
+                else:
+                    parts.append("현재까지 **전고점 미회복** 상태")
+                st.info("  ·  ".join(parts), icon="💡")
+
+                # ── 가격 차트 (MDD 구간 음영 + 매수가 수평선) ────
+                st.markdown("#### 📈 가격 추이 및 MDD 구간")
+                close_s = pc["close"]
+                fig2 = go.Figure()
+                fig2.add_trace(go.Scatter(
+                    x=close_s.index, y=close_s.values,
+                    mode="lines", name="종가",
+                    line=dict(color="#3b82f6", width=2),
+                ))
+                fig2.add_vrect(
+                    x0=mdd_d["peak_date"], x1=mdd_d["trough_date"],
+                    fillcolor="#fee2e2", opacity=0.5, line_width=0,
+                    annotation_text=f"MDD {mdd_pct * 100:.1f}%",
+                    annotation_position="top left",
+                    annotation_font_color="#dc2626",
+                )
+                if pc.get("entry_price", 0) > 0:
+                    fig2.add_hline(
+                        y=pc["entry_price"],
+                        line_dash="dash", line_color="#f97316",
+                        annotation_text=f"매수가 {pc['entry_price']:,.0f}원",
+                        annotation_position="right",
+                        annotation_font_color="#f97316",
+                    )
+                fig2.update_layout(
+                    height=300,
+                    margin=dict(l=0, r=0, t=30, b=0),
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    xaxis_title="", yaxis_title="주가 (원)",
+                    font=dict(size=12),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+
+                st.caption(
+                    f"분석 기간: {pc['period']}  ·  "
+                    f"현재가: {pc['current_price']:,.0f}원  ·  "
+                    "소스: Yahoo Finance (yfinance)"
+                )

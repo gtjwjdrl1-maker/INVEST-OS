@@ -227,21 +227,15 @@ def _purpose_badge(purpose: str) -> str:
     )
 
 
-def _build_table(items: list[dict], annotations: dict) -> pd.DataFrame:
+def _build_table(items: list[dict]) -> pd.DataFrame:
     rows = []
     for item in items:
         rno = item.get("rcept_no", "")
-        ann = annotations.get(rno, {})
         rows.append({
-            "공시일":       _fmt_date(item.get("rcept_dt", "")),
-            "종목명":       item.get("corp_name", ""),
-            "보고의무일":   ann.get("obligation_date", "—"),
-            "보유목적기록": ann.get("purpose", "—"),
-            "기록일시":     ann.get("saved_at", "—"),
-            "_rcept_no":   rno,
-            "_corp_name":  item.get("corp_name", ""),
-            "_rcept_dt":   item.get("rcept_dt", ""),
-            "_report_nm":  item.get("report_nm", ""),
+            "공시일":    _fmt_date(item.get("rcept_dt", "")),
+            "종목명":    item.get("corp_name", ""),
+            "제출인":    item.get("flr_nm", ""),
+            "_rcept_no": rno,
         })
     df = pd.DataFrame(rows)
     if not df.empty:
@@ -317,9 +311,6 @@ def render(state) -> None:
     begin_de = start_date.strftime("%Y%m%d")
     end_de   = end_date.strftime("%Y%m%d")
 
-    # ── 기간 경고 ──────────────────────────────────────────────────────────
-    _range_warning(start_date, end_date)
-
     # ── 캐시 ──────────────────────────────────────────────────────────────
     CACHE_KEY   = "m1_4_items"
     CACHE_TS    = "m1_4_ts"
@@ -335,12 +326,13 @@ def render(state) -> None:
 
     items: list[dict] = []
     error_msg: str | None = None
-    using_demo = False
 
+    # ── 데모 모드 ──────────────────────────────────────────────────────────
     if not api_key:
+        st.info("📊 데모 데이터 표시 중")
         items = list(_DEMO_DATA)
-        using_demo = True
 
+    # ── 캐시 히트 ─────────────────────────────────────────────────────────
     elif cache_hit:
         items = st.session_state[CACHE_KEY]
         elapsed = int(time.time() - st.session_state[CACHE_TS])
@@ -349,16 +341,16 @@ def render(state) -> None:
             f"— {start_date} ~ {end_date} / {', '.join(markets)}"
         )
 
-    else:
+    # ── 버튼 클릭 시에만 실제 조회 ────────────────────────────────────────
+    elif do_query:
+        _range_warning(start_date, end_date)
         corp_cls_tuple = tuple(_CORP_CLS_MAP[m] for m in markets if m in _CORP_CLS_MAP)
-
         progress_bar = st.progress(0, text="조회 준비 중…")
         status_text  = st.empty()
 
         raw_items, error_msg = _fetch_dart(
             corp_cls_tuple, begin_de, end_de, api_key, progress_bar, status_text
         )
-
         progress_bar.empty()
         status_text.empty()
 
@@ -370,173 +362,45 @@ def render(state) -> None:
                 CACHE_PARAM: cache_params,
             })
 
+    # ── 최초 진입 (버튼 미클릭) ───────────────────────────────────────────
+    else:
+        st.info("📅 조회 기간과 시장을 설정한 후 **🔄 공시 조회** 버튼을 누르세요.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # ── 에러 처리 ──────────────────────────────────────────────────────────
     if error_msg:
         st.error(error_msg)
         st.markdown("[📋 DART 공시 포털에서 직접 확인](https://dart.fss.or.kr)")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    if using_demo:
-        st.info("📊 데모 데이터 표시 중")
+    # ── 결과 표시 ──────────────────────────────────────────────────────────
+    if not items:
+        st.info("조회 기간 내 국민연금공단 약식 대량보유보고서가 없습니다.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
-    # ── 탭 ────────────────────────────────────────────────────────────────
-    tab_result, tab_history = st.tabs(["📋 조회 결과", "📚 기록 이력"])
+    df = _build_table(items)
 
-    # ════════════════════════════════════════════════════════════════════
-    # 탭 1 — 조회 결과 + 보유목적 기록 패널
-    # ════════════════════════════════════════════════════════════════════
-    with tab_result:
-        if not items:
-            st.info("조회 기간 내 국민연금공단 약식 대량보유보고서가 없습니다.")
-        else:
-            annotations = _load_annotations()
-            df = _build_table(items, annotations)
+    st.markdown(
+        f"**총 {len(df)}건** — 주식등의대량보유상황보고서(약식) / 국민연금공단 "
+        f"({start_date} ~ {end_date})"
+    )
+    st.dataframe(
+        df[["공시일", "종목명", "제출인"]],
+        use_container_width=True,
+        height=min(420, 58 + 35 * len(df)),
+    )
 
-            st.markdown(
-                f"**총 {len(df)}건** — 주식등의대량보유상황보고서(약식) / 국민연금공단 "
-                f"({start_date} ~ {end_date})"
+    st.markdown("**📄 공시 원문 바로가기**")
+    link_cols = st.columns(3)
+    for i, row in df.iterrows():
+        with link_cols[i % 3]:
+            st.link_button(
+                f"📄 {row['종목명']} {row['공시일']}",
+                _DART_LINK.format(rcept_no=row["_rcept_no"]),
+                use_container_width=True,
             )
-            display_df = df[["공시일", "종목명", "보고의무일", "보유목적기록", "기록일시"]]
-            st.dataframe(display_df, use_container_width=True,
-                         height=min(420, 58 + 35 * len(display_df)))
-
-            # 원문 링크
-            st.markdown("**공시 원문 바로가기**")
-            link_cols = st.columns(3)
-            for i, row in df.iterrows():
-                with link_cols[i % 3]:
-                    st.link_button(
-                        f"📄 {row['종목명']} {row['공시일']}",
-                        _DART_LINK.format(rcept_no=row["_rcept_no"]),
-                        use_container_width=True,
-                    )
-
-            # ── 보유목적 기록 패널 (컴팩트) ───────────────────────────────
-            st.markdown("---")
-            st.markdown("##### 📌 보유목적 기록")
-            st.caption("원문 확인 후 보고의무일 입력 + 사유 클릭으로 저장. 변경 시 덮어씁니다.")
-
-            # 헤더
-            h0, h1, h2, h3, h4 = st.columns([2, 1.5, 4, 1.2, 0.4])
-            for col, label in zip(
-                [h0, h1, h2, h3],
-                ["종목명 (공시일)", "보고의무일", "사유 선택", "현재 기록"],
-            ):
-                col.markdown(
-                    f'<span style="font-size:11px;color:#9ca3af">{label}</span>',
-                    unsafe_allow_html=True,
-                )
-            st.markdown('<hr style="margin:4px 0;border-color:#374151">', unsafe_allow_html=True)
-
-            for _, row in df.iterrows():
-                rno       = row["_rcept_no"]
-                corp_name = row["_corp_name"]
-                rcept_dt  = row["_rcept_dt"]
-                report_nm = row["_report_nm"]
-                ann       = annotations.get(rno, {})
-                cur_p     = ann.get("purpose", "")
-                cur_obl   = ann.get("obligation_date", "")
-
-                c0, c1, c2, c3, c4 = st.columns([2, 1.5, 4, 1.2, 0.4])
-
-                c0.markdown(
-                    f'<span style="font-weight:600;font-size:13px">{corp_name}</span><br>'
-                    f'<span style="font-size:11px;color:#9ca3af">{_fmt_date(rcept_dt)}</span>',
-                    unsafe_allow_html=True,
-                )
-
-                init_date: date | None = None
-                if cur_obl:
-                    try:
-                        init_date = date.fromisoformat(cur_obl)
-                    except ValueError:
-                        pass
-                c1.date_input(
-                    "", value=init_date,
-                    key=f"m1_4_obl_{rno}",
-                    label_visibility="collapsed",
-                    on_change=_on_date_change,
-                    args=(rno, corp_name, rcept_dt, report_nm),
-                )
-
-                with c2:
-                    b_cols = st.columns(5)
-                    for bc, (label, value, _) in zip(b_cols, _PURPOSE_OPTIONS):
-                        is_sel = cur_p == value
-                        if bc.button(
-                            f"✓{label}" if is_sel else label,
-                            key=f"m1_4_ann_{rno}_{value}",
-                            type="primary" if is_sel else "secondary",
-                            use_container_width=True,
-                        ):
-                            _save_annotation(rno, corp_name, rcept_dt, report_nm, purpose=value)
-                            st.rerun()
-
-                with c3:
-                    if cur_p:
-                        st.markdown(_purpose_badge(cur_p), unsafe_allow_html=True)
-                    else:
-                        st.markdown(
-                            '<span style="color:#6b7280;font-size:11px">미기록</span>',
-                            unsafe_allow_html=True,
-                        )
-
-                with c4:
-                    if cur_p or cur_obl:
-                        if st.button("🗑️", key=f"m1_4_del_{rno}", help="기록 삭제"):
-                            _delete_annotation(rno)
-                            st.rerun()
-
-                st.markdown('<hr style="margin:2px 0;border-color:#1f2937">', unsafe_allow_html=True)
-
-    # ════════════════════════════════════════════════════════════════════
-    # 탭 2 — 기록 이력
-    # ════════════════════════════════════════════════════════════════════
-    with tab_history:
-        annotations = _load_annotations()
-        if not annotations:
-            st.info("저장된 기록이 없습니다. 조회 결과 탭에서 사유를 기록하세요.")
-        else:
-            hist_rows = []
-            for rno, ann in annotations.items():
-                hist_rows.append({
-                    "기록일시":   ann.get("saved_at", "—"),
-                    "종목명":    ann.get("corp_name", ""),
-                    "공시일":    _fmt_date(ann.get("rcept_dt", "")),
-                    "보고의무일": ann.get("obligation_date", "—"),
-                    "보유목적":  ann.get("purpose", "—"),
-                    "_rcept_no": rno,
-                })
-            hist_df = (
-                pd.DataFrame(hist_rows)
-                .sort_values("기록일시", ascending=False)
-                .reset_index(drop=True)
-            )
-
-            f_col, _ = st.columns([2, 4])
-            purposes = ["전체"] + sorted(hist_df["보유목적"].unique().tolist())
-            sel = f_col.selectbox("보유목적 필터", purposes, key="m1_4_hist_filter")
-            if sel != "전체":
-                hist_df = hist_df[hist_df["보유목적"] == sel].reset_index(drop=True)
-
-            st.markdown(f"**{len(hist_df)}건**")
-            show_cols = ["기록일시", "종목명", "공시일", "보고의무일", "보유목적"]
-            st.dataframe(hist_df[show_cols], use_container_width=True,
-                         height=min(500, 58 + 35 * len(hist_df)))
-
-            st.markdown("**원문 링크 / 삭제**")
-            for _, row in hist_df.iterrows():
-                rno = row["_rcept_no"]
-                la, lb, lc = st.columns([3.5, 1.5, 0.5])
-                la.markdown(
-                    f'**{row["종목명"]}** '
-                    f'<span style="color:#9ca3af;font-size:11px">{row["공시일"]}</span> '
-                    f'&nbsp;{_purpose_badge(row["보유목적"])}',
-                    unsafe_allow_html=True,
-                )
-                lb.link_button("📄 DART 원문", _DART_LINK.format(rcept_no=rno), use_container_width=True)
-                if lc.button("🗑️", key=f"m1_4_hdel_{rno}", help="삭제"):
-                    _delete_annotation(rno)
-                    st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)

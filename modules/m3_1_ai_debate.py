@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from core.state import WATCHLIST_KEY
+
 MODULE_ID = "m3_1_ai_debate"
 MODULE_META = {
     "title": "AI 심의 프롬프트 생성기",
@@ -60,6 +62,12 @@ def _claude_prompt(name: str, ticker: str) -> str:
 - 편입한다면 적정 비중(전체 포트 대비 %)과 그 근거는?
 - 모니터링해야 할 핵심 지표 3가지
 
+[뉴스 감시 키워드]
+위 '모니터링해야 할 핵심 지표 3가지'를 뉴스 검색에 바로 쓸 수 있는
+단어로 변환하여 아래 형식으로만 출력하세요. 설명 없이 형식만:
+
+KEYWORDS: ["키워드1", "키워드2", "키워드3"]
+
 공개된 재무·시장 정보만 사용하고, 추측성 단정은 피해 주세요.
 """
 
@@ -111,15 +119,19 @@ def render(state) -> None:
 
     generate = st.button("🚀 프롬프트 생성", type="primary", use_container_width=True)
 
-    if not generate:
+    if generate:
+        if not (name.strip() or ticker.strip()):
+            st.warning("회사명 또는 티커를 입력하세요.")
+            return
+        st.session_state["m3_1_generated"] = True
+        st.session_state["m3_1_result_name"] = name.strip()
+        st.session_state["m3_1_result_ticker"] = ticker.strip()
+
+    if not st.session_state.get("m3_1_generated"):
         st.info("회사명과 티커를 입력한 뒤 **프롬프트 생성** 버튼을 누르세요.", icon="ℹ️")
         return
 
-    if not (name.strip() or ticker.strip()):
-        st.warning("회사명 또는 티커를 입력하세요.")
-        return
-
-    n, t = name.strip(), ticker.strip()
+    n, t = st.session_state["m3_1_result_name"], st.session_state["m3_1_result_ticker"]
 
     # ── 결과 탭 ─────────────────────────────────────────────────────
     tab_perp, tab_claude, tab_gemini = st.tabs(["🔍 Perplexity", "🤖 Claude", "✨ Gemini"])
@@ -127,19 +139,19 @@ def render(state) -> None:
     with tab_perp:
         st.caption("**Perplexity** — 최신 뉴스·공시·리포트를 실시간 검색합니다.")
         prompt_p = _perplexity_prompt(n, t)
-        st.text_area("Perplexity 프롬프트", value=prompt_p, height=300, key="ta_perp")
+        st.text_area("Perplexity 프롬프트", value=prompt_p, height=300, key=f"ta_perp_{n}_{t}")
         st.code(prompt_p, language=None)
 
     with tab_claude:
         st.caption("**Claude Pro** — 찬성·반대 양측 논거를 심층 분석합니다.")
         prompt_c = _claude_prompt(n, t)
-        st.text_area("Claude 프롬프트", value=prompt_c, height=300, key="ta_claude")
+        st.text_area("Claude 프롬프트", value=prompt_c, height=300, key=f"ta_claude_{n}_{t}")
         st.code(prompt_c, language=None)
 
     with tab_gemini:
         st.caption("**Gemini Pro** — 업종·경쟁사·글로벌 피어를 교차검증합니다.")
         prompt_g = _gemini_prompt(n, t)
-        st.text_area("Gemini 프롬프트", value=prompt_g, height=300, key="ta_gemini")
+        st.text_area("Gemini 프롬프트", value=prompt_g, height=300, key=f"ta_gemini_{n}_{t}")
         st.code(prompt_g, language=None)
 
     # ── 하단 안내 카드 ───────────────────────────────────────────────
@@ -151,3 +163,18 @@ def render(state) -> None:
         "분석 결과는 아래 '종목 선택 근거 기록' 모듈에 저장하세요.",
         icon="📋",
     )
+
+    # ── 뉴스 감시 키워드 저장 ────────────────────────────────────────
+    st.divider()
+    st.markdown("**📌 뉴스 감시 키워드 저장**")
+
+    col1, col2, col3 = st.columns(3)
+    kw1 = col1.text_input("키워드 1", key="kw1")
+    kw2 = col2.text_input("키워드 2", key="kw2")
+    kw3 = col3.text_input("키워드 3", key="kw3")
+
+    if st.button("저장", key="m3_1_watchlist_save"):
+        st.session_state.setdefault(WATCHLIST_KEY, {})
+        keywords = [k for k in [kw1, kw2, kw3] if k.strip()]
+        st.session_state[WATCHLIST_KEY][n] = keywords
+        st.success(f"{n} 키워드 {len(keywords)}개 저장됨")

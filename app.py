@@ -11,9 +11,21 @@ from core import module_registry
 
 load_dotenv(override=True)
 
+# Streamlit Community Cloud 배포 대응:
+# 로컬 .env가 없는 클라우드 환경에서는 대시보드에 등록한 st.secrets 값을
+# os.environ에 주입해 기존 os.getenv(...) 기반 코드가 그대로 동작하게 한다.
+try:
+    for _k, _v in st.secrets.items():
+        os.environ.setdefault(_k, str(_v))
+except Exception:
+    pass  # secrets.toml이 없는 로컬 환경에서는 조용히 무시
+
 ENV_PATH = Path(__file__).parent / ".env"
 if not ENV_PATH.exists():
-    ENV_PATH.touch()
+    try:
+        ENV_PATH.touch()
+    except Exception:
+        pass  # 클라우드의 읽기 전용 파일시스템 등에서는 무시
 
 # API 키 목록: (표시명, .env 키이름, session_state 키)
 API_KEYS = [
