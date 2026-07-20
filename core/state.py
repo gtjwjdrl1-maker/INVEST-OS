@@ -182,11 +182,6 @@ def get_module_visibility() -> dict[str, bool]:
     return st.session_state["module_visibility"]
 
 
-def is_module_visible(module_id: str, default: bool = True) -> bool:
-    vis = get_module_visibility()
-    return vis.get(module_id, default)
-
-
 def set_module_visibility(module_id: str, visible: bool) -> None:
     vis = get_module_visibility()
     vis[module_id] = visible
