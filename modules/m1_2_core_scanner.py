@@ -154,7 +154,7 @@ def _stage1_filter(
         except Exception as e:
             status_ph.info(f"1단계 | {mkt}: pykrx 실패({str(e)[:40]}) → FDR 재시도")
 
-        # ── 2순위: FinanceDataReader 폴백 (기존 로직) ──
+        # ── 2순위: FinanceDataReader 폴백 ──
         try:
             import FinanceDataReader as fdr
             df = fdr.StockListing(mkt)
@@ -418,29 +418,15 @@ def _show_results(results: list[dict], state) -> None:
     st.dataframe(df, use_container_width=True, height=min(420, 55 + 35 * len(df)))
     st.markdown("---")
 
-    options = [f"{r['종목명']} ({r['ticker_krx']})" for r in results]
-    selected = st.selectbox(
-        "📰 뉴스 조회할 종목 선택", ["선택하세요"] + options, key="m1_2_news_select"
-    )
-    col_news, col_dart = st.columns(2)
-    with col_news:
-        if st.button("뉴스 조회 →", key="m1_2_news_btn", use_container_width=True):
-            if selected != "선택하세요":
-                name = selected.split(" (")[0]
-                st.session_state["m1_1_query"] = name
-                st.success(f"뉴스 스캐너에 '{name}' 전달 완료 — 위 뉴스 스캐너에서 조회 버튼을 누르세요.")
-            else:
-                st.warning("종목을 먼저 선택하세요.")
-    with col_dart:
-        if st.button(
-            "Step 2 DART 분석으로 ↗",
-            key="m1_2_dart_btn",
-            use_container_width=True,
-            type="primary",
-        ):
-            ticker_list = [r["ticker_krx"] for r in results]
-            st.session_state["dart_candidate_tickers"] = ticker_list
-            st.success(f"{len(ticker_list)}개 종목이 Step 2 분석 목록에 저장되었습니다.")
+    if st.button(
+        "Step 2 DART 분석으로 ↗",
+        key="m1_2_dart_btn",
+        use_container_width=True,
+        type="primary",
+    ):
+        ticker_list = [r["ticker_krx"] for r in results]
+        st.session_state["dart_candidate_tickers"] = ticker_list
+        st.success(f"{len(ticker_list)}개 종목이 Step 2 분석 목록에 저장되었습니다.")
 
     # ── AI 종합 해석 ─────────────────────────────────────────────────
     st.markdown("---")
@@ -489,39 +475,36 @@ def render(state) -> None:
     # ══════════════════════════════════════════════════════
     # 1. 산업분류 필터
     # ══════════════════════════════════════════════════════
-    with st.expander("🏭 산업분류 필터 (선택)", expanded=False):
-        st.caption("yfinance 섹터/업종 기준 · 선택하지 않으면 전체 산업 대상")
-
-        use_sector = st.checkbox("산업분류 필터 사용", value=False, key="m1_2_use_sector")
+    with st.expander("🏭 산업분류 필터 (선택)", expanded=True):
+        st.caption("yfinance 섹터/업종 기준 · '전체'를 선택하면 모든 산업 대상")
 
         major = "전체"
         mid   = "전체"
         selected_subs: list[str] = []
 
-        if use_sector:
-            major_options = ["전체"] + [k for k in SECTOR_HIERARCHY if not k.startswith("_")]
-            major = st.selectbox("대분류", major_options, key="m1_2_major")
+        major_options = ["전체"] + [k for k in SECTOR_HIERARCHY if not k.startswith("_")]
+        major = st.selectbox("대분류", major_options, key="m1_2_major")
 
-            if major != "전체":
-                mid_options = ["전체"] + [
-                    k for k in SECTOR_HIERARCHY[major] if not k.startswith("_")
-                ]
-                mid = st.selectbox("중분류", mid_options, key="m1_2_mid")
+        if major != "전체":
+            mid_options = ["전체"] + [
+                k for k in SECTOR_HIERARCHY[major] if not k.startswith("_")
+            ]
+            mid = st.selectbox("중분류", mid_options, key="m1_2_mid")
 
-                if mid != "전체":
-                    sub_options = SECTOR_HIERARCHY[major].get(mid, [])
-                    selected_subs = st.multiselect(
-                        "소분류 industryKey (복수 선택, 비우면 중분류 전체)",
-                        sub_options,
-                        default=[],
-                        key="m1_2_sub",
-                    )
+            if mid != "전체":
+                sub_options = SECTOR_HIERARCHY[major].get(mid, [])
+                selected_subs = st.multiselect(
+                    "소분류 industryKey (복수 선택, 비우면 중분류 전체)",
+                    sub_options,
+                    default=[],
+                    key="m1_2_sub",
+                )
 
-            # 선택 요약 표시
-            s_keys, i_keys = _resolve_sector_keys(major, mid, selected_subs)
-            if s_keys or i_keys:
-                preview = list(i_keys or s_keys)
-                st.info(f"필터 적용: {', '.join(preview[:5])}{'…' if len(preview) > 5 else ''}")
+        # 선택 요약 표시
+        s_keys, i_keys = _resolve_sector_keys(major, mid, selected_subs)
+        if s_keys or i_keys:
+            preview = list(i_keys or s_keys)
+            st.info(f"필터 적용: {', '.join(preview[:5])}{'…' if len(preview) > 5 else ''}")
 
     # ══════════════════════════════════════════════════════
     # 2. 스크리닝 조건 (조건별 ON/OFF 체크박스)
@@ -535,7 +518,7 @@ def render(state) -> None:
             )
         with col_r:
             min_turnover = st.number_input(
-                "당일 거래대금 최소 (억원)", value=50, step=10, min_value=0, key="m1_2_turn"
+                "당일 거래대금 최소 (억원)", value=30, step=10, min_value=0, key="m1_2_turn"
             )
         markets = st.multiselect(
             "대상 시장", ["KOSPI", "KOSDAQ"], default=["KOSPI"], key="m1_2_markets"
@@ -569,7 +552,7 @@ def render(state) -> None:
         # 부채비율
         col1, col2 = st.columns([1, 4])
         with col1:
-            use_debt = st.checkbox("부채비율", value=True, key="m1_2_use_debt")
+            use_debt = st.checkbox("부채비율", value=False, key="m1_2_use_debt")
         with col2:
             max_debt = st.slider(
                 "부채비율 최대 (%)", 50, 500, 150, key="m1_2_debt",
@@ -641,7 +624,7 @@ def render(state) -> None:
         use_per, max_per,
         use_eps, min_eps,
         use_rev, min_rev,
-        use_sector, major, mid, tuple(sorted(selected_subs)),
+        major, mid, tuple(sorted(selected_subs)),
     )
 
     cached_results = st.session_state.get(cache_key)
@@ -680,9 +663,6 @@ def render(state) -> None:
             return
 
         # 2단계: yfinance 재무 + 산업분류 필터 (info 한 번 호출로 동시 처리)
-        sector_fs  = frozenset(s_keys) if use_sector else frozenset()
-        industry_fs = frozenset(i_keys) if use_sector else frozenset()
-
         total = len(stage1)
         status_ph.info(f"2단계: {total:,}개 종목 재무 필터링 중 (yfinance 병렬)...")
         progress_bar = st.progress(0)
