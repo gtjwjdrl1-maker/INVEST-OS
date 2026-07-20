@@ -182,6 +182,11 @@ def get_module_visibility() -> dict[str, bool]:
     return st.session_state["module_visibility"]
 
 
+def is_module_visible(module_id: str, default: bool = True) -> bool:
+    vis = get_module_visibility()
+    return vis.get(module_id, default)
+
+
 def set_module_visibility(module_id: str, visible: bool) -> None:
     vis = get_module_visibility()
     vis[module_id] = visible
@@ -209,8 +214,6 @@ def init_widget_defaults() -> None:
         # ── M-3-1 AI 심의 프롬프트 생성기 ──────────────────────────
         "m3_1_name": "",
         "m3_1_ticker": "",
-        # ── 설정 탭 스케줄 ──────────────────────────────────────────
-        "sched_threshold": "±5%",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
