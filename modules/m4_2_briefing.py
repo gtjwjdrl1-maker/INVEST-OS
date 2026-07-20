@@ -550,37 +550,16 @@ def _build_watch_briefing(hits: list[dict]) -> str:
 def render(state) -> None:
     _load_dotenv(dotenv_path=_ENV_FILE, override=True)
 
-    # ── 종목 감시 키워드 ─────────────────────────────────────────────
+    # ── 모듈 제목 ────────────────────────────────────────────────────
+    st.markdown(
+        '<div class="inv-card"><div class="inv-card-title">📮 자동 브리핑</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # 감시 키워드 기본 예시 (목록이 비어 있으면 자동 시드 → 면접관에게 항상 예시 노출)
     st.session_state.setdefault(WATCHLIST_KEY, {})
-
-    with st.expander("📋 종목 감시 키워드", expanded=False):
-        watchlist = st.session_state[WATCHLIST_KEY]
-
-        if not watchlist:
-            st.caption("3-1 AI 토론 결과의 KEYWORDS를 여기에 등록하세요.")
-        else:
-            for 종목, keywords in list(watchlist.items()):
-                c1, c2 = st.columns([5, 1])
-                c1.markdown(f"**{종목}** — {' · '.join(keywords)}")
-                if c2.button("삭제", key=f"wl_del_{종목}"):
-                    del st.session_state[WATCHLIST_KEY][종목]
-                    save_watchlist(st.session_state[WATCHLIST_KEY])
-                    st.rerun()
-
-        st.markdown("---")
-        st.markdown("**키워드 추가**")
-        st.caption("Claude 분석 결과의 KEYWORDS 값을 아래에 입력하세요.")
-        c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 1])
-        wl_name = c1.text_input("종목명", key="wl_name")
-        wl_k1 = c2.text_input("키워드 1", key="wl_k1")
-        wl_k2 = c3.text_input("키워드 2", key="wl_k2")
-        wl_k3 = c4.text_input("키워드 3", key="wl_k3")
-        if c5.button("저장", key="wl_add"):
-            if wl_name and wl_k1:
-                kws = [k for k in [wl_k1, wl_k2, wl_k3] if k.strip()]
-                st.session_state[WATCHLIST_KEY][wl_name] = kws
-                save_watchlist(st.session_state[WATCHLIST_KEY])
-                st.rerun()
+    if not st.session_state[WATCHLIST_KEY]:
+        st.session_state[WATCHLIST_KEY] = {"SK하이닉스": ["HBM4", "CXMT", "D램"]}
 
     # ── API 연결 상태 ────────────────────────────────────────────────
     kakao_ok = bool(os.environ.get("KAKAO_REST_API_KEY") and os.environ.get("KAKAO_REFRESH_TOKEN"))
@@ -612,10 +591,14 @@ def render(state) -> None:
     if not naver_ok:
         st.caption("종목 뉴스: NAVER_CLIENT_ID · NAVER_CLIENT_SECRET 없으면 구글뉴스 RSS로 자동 대체됩니다.")
 
-    # ── 브리핑 미리보기 ─────────────────────────────────────────────
+    # ── 📊 일일 브리핑 ───────────────────────────────────────────────
     st.markdown("---")
+    st.markdown("**📊 일일 브리핑**")
+    st.caption(
+        "국내외 시장지표를 조사하고, 국내 경제 관련 주요 뉴스 3개를 요약합니다. "
+        "보유 종목이 있으면 관련 뉴스도 자동 수집·요약해 함께 제공합니다."
+    )
 
-    # ── 데이터 소스 상태 표시 ────────────────────────────────────
     market_status = st.empty()
 
     if st.button("브리핑 생성", key="m4_2_preview_btn"):
@@ -677,10 +660,37 @@ def render(state) -> None:
         if not kakao_ok and not gmail_ok:
             st.info("API 키가 없어 발송 버튼이 비활성화되어 있습니다. 미리보기는 정상 표시됩니다.")
 
-    # ── 감시 브리핑 (메인 브리핑과 완전히 분리) ─────────────────────
+    # ── 🔍 감시 브리핑 (메인 브리핑과 완전히 분리) ──────────────────
     st.markdown("---")
     st.markdown("**🔍 감시 브리핑**")
     st.caption("등록된 종목 감시 키워드로 뉴스를 검색해 별도 브리핑을 만듭니다.")
+
+    # 종목 감시 키워드 등록 (감시 브리핑 바로 위에 배치)
+    with st.expander("📋 종목 감시 키워드", expanded=True):
+        watchlist = st.session_state[WATCHLIST_KEY]
+
+        for 종목, keywords in list(watchlist.items()):
+            c1, c2 = st.columns([5, 1])
+            c1.markdown(f"**{종목}** — {' · '.join(keywords)}")
+            if c2.button("삭제", key=f"wl_del_{종목}"):
+                del st.session_state[WATCHLIST_KEY][종목]
+                save_watchlist(st.session_state[WATCHLIST_KEY])
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("**키워드 추가**")
+        st.caption("3-1 AI 심의 프롬프트 결과의 KEYWORDS 값을 아래에 입력하세요.")
+        c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 1])
+        wl_name = c1.text_input("종목명", key="wl_name")
+        wl_k1 = c2.text_input("키워드 1", key="wl_k1")
+        wl_k2 = c3.text_input("키워드 2", key="wl_k2")
+        wl_k3 = c4.text_input("키워드 3", key="wl_k3")
+        if c5.button("저장", key="wl_add"):
+            if wl_name and wl_k1:
+                kws = [k for k in [wl_k1, wl_k2, wl_k3] if k.strip()]
+                st.session_state[WATCHLIST_KEY][wl_name] = kws
+                save_watchlist(st.session_state[WATCHLIST_KEY])
+                st.rerun()
 
     watchlist_all = st.session_state.get(WATCHLIST_KEY, {})
     watchlist_names = list(watchlist_all.keys())
