@@ -6,7 +6,6 @@ M-4-2 · 자동 브리핑 관리자
 from __future__ import annotations
 import os
 import smtplib
-import textwrap
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -617,7 +616,6 @@ def render(state) -> None:
     st.markdown("---")
 
     # ── 데이터 소스 상태 표시 ────────────────────────────────────
-    news_status = st.empty()
     market_status = st.empty()
 
     if st.button("브리핑 생성", key="m4_2_preview_btn"):
@@ -754,7 +752,6 @@ def send_briefing_now() -> dict:
         rebalance_alerts = []
 
     try:
-        from core import state as _state_mod
         # Streamlit 세션 밖에서는 get_state()를 쓸 수 없으므로 kis_client를 직접 호출
         from core import kis_client
         pf = kis_client.fetch_portfolio()
