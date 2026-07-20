@@ -8,15 +8,12 @@
 """
 from __future__ import annotations
 
-# ── 모듈 import (개발 완료된 것만 주석 해제) ──────────────────────
-# from modules import m1_1_news_scanner  # 비활성화
+# ── 모듈 import ──────────────────────
 from modules import m1_2_core_scanner
-# from modules import m1_3_ark_scanner   # 비활성화
 from modules import m1_4_nps_tracker
 from modules import m1_5_nps_backtest
 from modules import m2_1_dart_cutoff
 from modules import m2_2_stress_test
-# from modules import m2_3_alt_signal  # 비활성화 — 대체자산 전략 보류
 from modules import m3_1_ai_debate
 from modules import m3_2_investment_journal
 from modules import m4_1_weight_monitor
@@ -24,14 +21,11 @@ from modules import m4_2_briefing
 
 # ── 등록 목록 ────────────────────────────────────────────────────────
 _MODULES: list = [
-    # m1_1_news_scanner,  # 비활성화
     m1_2_core_scanner,
-    # m1_3_ark_scanner,   # 비활성화
     m1_4_nps_tracker,
     m1_5_nps_backtest,
     m2_1_dart_cutoff,
     m2_2_stress_test,
-    # m2_3_alt_signal,  # 비활성화
     m3_1_ai_debate,
     m3_2_investment_journal,
     m4_1_weight_monitor,
