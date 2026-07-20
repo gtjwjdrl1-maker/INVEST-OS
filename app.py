@@ -219,9 +219,7 @@ BUILT_MODULES = module_registry.get_all_modules()
 
 # 개발 예정 모듈 — 아직 구현되지 않음. 설정 탭의 '모듈 목록' 상태 표시에만 사용한다.
 # (워크플로 화면에는 가짜 '개발 예정' 카드를 더 이상 띄우지 않는다.)
-PLANNED_MODULES = [
-    {"id": "m4_2_briefing", "step": 4, "title": "자동 브리핑", "icon": "📨", "description": "오전 9시·오후 4시 카카오톡·메일 발송"},
-]
+PLANNED_MODULES = []
 
 with st.sidebar:
     st.markdown('<div style="font-size:15px;font-weight:700;color:#111827;padding:4px 0 12px 0"><span style="color:#185FA5">◆</span> InvestOS</div>', unsafe_allow_html=True)
@@ -534,13 +532,6 @@ elif page == "settings":
                     st.rerun()
 
     with c2:
-        with st.container(border=True):
-            st.markdown("**🕐 자동화 스케줄**")
-            st.time_input("아침 브리핑",     value=None, key="sched_morning")
-            st.time_input("장마감 브리핑",   value=None, key="sched_close")
-            st.selectbox("리밸런싱 체크 주기", ["매일", "매주", "매월"], key="sched_rebal")
-            st.text_input("리밸런싱 임계값", value="±5%", key="sched_threshold")
-
         with st.container(border=True):
             n_built = len(BUILT_MODULES)
             n_total = n_built + len(PLANNED_MODULES)
