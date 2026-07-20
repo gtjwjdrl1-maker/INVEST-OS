@@ -108,7 +108,7 @@ SECTOR_HIERARCHY: dict[str, dict] = {
 }
 
 
-# ── 1단계: FinanceDataReader 시총·거래대금 필터 ───────────────────────
+# ── 1단계: 시총·거래대금 필터 (pykrx 우선, FDR 폴백) ──────────────────
 
 def _stage1_filter(
     markets: list[str],
@@ -116,43 +116,66 @@ def _stage1_filter(
     min_turnover_eok: float,
     status_ph,
 ) -> list[dict]:
-    try:
-        import FinanceDataReader as fdr
-    except ImportError:
-        st.error("FinanceDataReader 패키지가 필요합니다. `pip install finance-datareader` 후 재시작하세요.")
-        return []
+    import datetime
 
+    base_date = datetime.date.today().strftime("%Y%m%d")
     candidates: list[dict] = []
+
     for mkt in markets:
         status_ph.info(f"1단계 | {mkt}: 전체 종목 시총·거래대금 조회 중...")
+
+        # ── 1순위: pykrx (KRX getJsonData 경로, 상대적으로 안정적) ──
         try:
+            from pykrx import stock
+            cap = stock.get_market_cap_by_ticker(base_date, market=mkt, alternative=True)
+            if cap is not None and not cap.empty:
+                cap = cap.copy()
+                cap["시총_억"]     = pd.to_numeric(cap["시가총액"], errors="coerce") / 1e8
+                cap["거래대금_억"] = pd.to_numeric(cap["거래대금"], errors="coerce") / 1e8
+                n_all = len(cap)
+                cap = cap[(cap["시총_억"] >= min_cap_eok) &
+                          (cap["거래대금_억"] >= min_turnover_eok)]
+                status_ph.info(f"1단계 | {mkt}: {n_all:,}개 → {len(cap):,}개 통과 (pykrx)")
+
+                for code, row in cap.iterrows():
+                    code = str(code).zfill(6)
+                    try:
+                        name = stock.get_market_ticker_name(code)
+                    except Exception:
+                        name = code
+                    candidates.append({
+                        "ticker_krx": code,
+                        "종목명": name,
+                        "시장": mkt,
+                        "시총(억)": round(float(row["시총_억"]), 0),
+                        "거래대금(억)": round(float(row["거래대금_억"]), 1),
+                    })
+                continue  # 이 시장 완료 → FDR 폴백 불필요
+        except Exception as e:
+            status_ph.info(f"1단계 | {mkt}: pykrx 실패({str(e)[:40]}) → FDR 재시도")
+
+        # ── 2순위: FinanceDataReader 폴백 (기존 로직) ──
+        try:
+            import FinanceDataReader as fdr
             df = fdr.StockListing(mkt)
         except Exception as e:
             st.warning(f"{mkt} 종목 목록 조회 실패: {e}")
             continue
-
         if df is None or df.empty:
             st.warning(f"{mkt} 종목 목록이 비어 있습니다.")
             continue
 
-        n_all = len(df)
-
-        df["시총_억"] = pd.to_numeric(df["Marcap"], errors="coerce") / 1e8
-        df = df[df["시총_억"] >= min_cap_eok]
-        n_cap = len(df)
-        status_ph.info(f"1단계 | {mkt}: 시총 필터 {n_all:,}개 → {n_cap:,}개")
-
+        df = df.copy()
+        df["시총_억"]     = pd.to_numeric(df["Marcap"], errors="coerce") / 1e8
         df["거래대금_억"] = pd.to_numeric(df["Amount"], errors="coerce") / 1e8
-        df = df[df["거래대금_억"] >= min_turnover_eok]
-        n_turn = len(df)
-        status_ph.info(f"1단계 | {mkt}: 거래대금 필터 {n_cap:,}개 → {n_turn:,}개")
+        df = df[(df["시총_억"] >= min_cap_eok) &
+                (df["거래대금_억"] >= min_turnover_eok)]
 
         for _, row in df.iterrows():
             code = str(row.get("Code", "")).zfill(6)
-            name = str(row.get("Name", code))
             candidates.append({
                 "ticker_krx": code,
-                "종목명": name,
+                "종목명": str(row.get("Name", code)),
                 "시장": mkt,
                 "시총(억)": round(float(row["시총_억"]), 0),
                 "거래대금(억)": round(float(row["거래대금_억"]), 1),
