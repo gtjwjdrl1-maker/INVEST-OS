@@ -8,8 +8,8 @@
 1. **기존 모듈 파일은 수정하지 않는다.** 새 모듈을 추가할 때는 `modules/`에 새 파일을 만들고 `core/module_registry.py`에 등록만 추가한다.
 2. **모듈은 서로 직접 의존하지 않는다.** 모듈 간 데이터 공유가 필요하면 `core/state.py`의 공유 세션 상태를 거친다.
 3. **API 키가 없어도 앱이 죽지 않는다.** `.env`에 키가 없으면 데모 데이터 또는 "API 키 필요" 안내를 보여주고 계속 동작해야 한다.
-4. **모듈 상세 스펙은 `docs/module_spec.md`를 따른다.** 트리거 조건, 필터 기준, 산출 지표가 전부 정의되어 있으니 임의로 바꾸지 말고 그대로 구현한다. 스펙과 다르게 구현해야 할 이유가 있으면 먼저 사람에게 확인한다.
-5. **디자인은 `docs/mockup.html`을 참고한다.** Streamlit 네이티브 컴포넌트로 동일한 느낌(카드, 색상, 배지)을 재현하되, 커스텀 CSS(`st.markdown(..., unsafe_allow_html=True)`)를 적극 활용한다.
+4. **각 모듈의 트리거 조건·필터 기준·산출 지표는 임의로 바꾸지 않는다.** 설계와 다르게 구현할 이유가 있으면 먼저 확인한다.
+5. **디자인 일관성을 지킨다.** 카드·색상·배지 기반 UI를 Streamlit 네이티브 컴포넌트로 재현하되, 필요 시 커스텀 CSS(`st.markdown(..., unsafe_allow_html=True)`)를 활용한다.
 
 ## 폴더 구조
 ```
@@ -18,24 +18,26 @@ core/
   module_base.py           # 모듈 공통 인터페이스 (메타데이터 + render 함수 규약)
   module_registry.py       # 모든 모듈을 등록하는 단일 파일
   state.py                 # 모듈 간 공유 세션 상태 (포트폴리오 데이터 등)
+  kis_client.py            # KIS API 유틸리티 (읽기 전용)
+  backtest_utils.py        # 백테스트 계산 유틸
 modules/
+  m1_2_core_scanner.py
+  m1_4_nps_tracker.py
+  m1_5_nps_backtest.py
   m2_1_dart_cutoff.py
   m2_2_stress_test.py
-  m2_3_alt_signal.py
   m3_1_ai_debate.py
-  m3_2_kis_order.py
+  m3_2_investment_journal.py
   m4_1_weight_monitor.py
   m4_2_briefing.py
-docs/
-  module_spec.md           # 모듈별 상세 트리거/필터 스펙 (단일 출처)
-  mockup.html              # 디자인 참고 목업
-  phase_prompts.md         # 단계별 개발 프롬프트 모음
-.env                       # API 키 (DART, FRED, 네이버, Anthropic, Kakao 등)
+scripts/
+  kakao_token_setup.py     # 카카오 토큰 최초 발급(1회)
+.env                       # API 키 (Gemini, DART, FRED, 네이버, KIS, Kakao, Gmail 등)
 ```
 
 ## 모듈 공통 인터페이스 (core/module_base.py 규약)
 각 모듈 파일은 아래를 포함해야 한다:
-- `MODULE_ID` (예: `"m2_1_dart_cutoff"`)
+- `MODULE_ID` (예: `"m1_2_core_scanner"`)
 - `MODULE_META` dict: `{title, step, icon, default_visible, description}`
 - `render(state)` 함수: Streamlit 컴포넌트를 그리는 단일 진입점
 
@@ -46,7 +48,6 @@ docs/
 - 외부 API 호출은 항상 try/except로 감싸고, 실패 시 사용자에게 명확한 에러 메시지 표시
 - 신규 패키지 설치 시 `requirements.txt`에 반영
 
-## 개발 순서
-`docs/phase_prompts.md`에 정리된 순서를 따른다.
-Phase 0(셸+placeholder)을 먼저 완성하고, 이후 모듈을 하나씩 독립적으로 추가한다.
+## 개발 원칙
+Phase 0(셸 + 모듈 골격)을 먼저 완성하고, 이후 모듈을 하나씩 독립적으로 추가한다.
 한 번에 여러 모듈을 동시에 만들지 않는다.
