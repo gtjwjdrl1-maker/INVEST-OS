@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+
+# 로컬에서 export_krx_universe.py 로 생성해 커밋한 KRX 종목 유니버스 (Cloud 폴백용)
+_UNIVERSE_FILE = Path(__file__).resolve().parent.parent / "assets" / "krx_universe.json"
 
 MODULE_ID = "m1_2_core_scanner"
 MODULE_META = {
@@ -126,12 +131,46 @@ _FALLBACK_TICKERS: dict[str, list[tuple[str, str]]] = {
         ("096770", "SK이노베이션"), ("259960", "크래프톤"), ("316140", "우리금융지주"),
         ("032830", "삼성생명"), ("018260", "삼성에스디에스"), ("010130", "고려아연"),
         ("009150", "삼성전기"), ("034730", "SK"), ("010950", "S-Oil"),
-    ],
-    "KOSDAQ": [
-        ("247540", "에코프로비엠"), ("086520", "에코프로"), ("196170", "알테오젠"),
-        ("028300", "HLB"), ("277810", "레인보우로보틱스"), ("348370", "엔켐"),
-        ("263750", "펄어비스"), ("058470", "리노공업"), ("240810", "원익IPS"),
-        ("357780", "솔브레인"),
+        ("003550", "LG"), ("267250", "HD현대"), ("323410", "카카오뱅크"),
+        ("000810", "삼성화재"), ("036570", "엔씨소프트"), ("251270", "넷마블"),
+        ("090430", "아모레퍼시픽"), ("002790", "아모레퍼시픽그룹"), ("097950", "CJ제일제당"),
+        ("271560", "오리온"), ("139480", "이마트"), ("023530", "롯데쇼핑"),
+        ("008770", "호텔신라"), ("161390", "한국타이어앤테크놀로지"), ("000720", "현대건설"),
+        ("006360", "GS건설"), ("042660", "한화오션"), ("009540", "HD한국조선해양"),
+        ("010140", "삼성중공업"), ("329180", "HD현대중공업"), ("064350", "현대로템"),
+        ("267260", "HD현대일렉트릭"), ("012450", "한화에어로스페이스"), ("047810", "한국항공우주"),
+        ("079550", "LIG넥스원"), ("011070", "LG이노텍"), ("009830", "한화솔루션"),
+        ("051900", "LG생활건강"), ("011170", "롯데케미칼"), ("010060", "OCI홀딩스"),
+        ("004020", "현대제철"), ("000880", "한화"), ("034020", "두산에너빌리티"),
+        ("241560", "두산밥캣"), ("018880", "한온시스템"), ("204320", "HL만도"),
+        ("030200", "KT"), ("032640", "LG유플러스"), ("035250", "강원랜드"),
+        ("128940", "한미약품"), ("000100", "유한양행"), ("069620", "대웅제약"),
+        ("185750", "종근당"), ("006280", "GC녹십자"), ("326030", "SK바이오팜"),
+        ("302440", "SK바이오사이언스"), ("003490", "대한항공"), ("005830", "DB손해보험"),
+        ("088350", "한화생명"), ("138040", "메리츠금융지주"), ("029780", "삼성카드"),
+        ("071050", "한국금융지주"), ("016360", "삼성증권"), ("005940", "NH투자증권"),
+        ("006800", "미래에셋증권"), ("078930", "GS"), ("011780", "금호석유"),
+        ("120110", "코오롱인더"), ("298000", "효성첨단소재"), ("001040", "CJ"),
+        ("280360", "롯데웰푸드"), ("000080", "하이트진로"), ("003230", "삼양식품"),
+        ("138930", "BNK금융지주"), ("175330", "JB금융지주"), ("139130", "iM금융지주"),
+        ("039490", "키움증권"), ("003540", "대신증권"), ("001450", "현대해상"),
+        ("004170", "신세계"), ("031430", "신세계인터내셔날"), ("007070", "GS리테일"),
+        ("057050", "현대홈쇼핑"), ("069960", "현대백화점"), ("004990", "롯데지주"),
+        ("005300", "롯데칠성"), ("000120", "CJ대한통운"), ("004370", "농심"),
+        ("007310", "오뚜기"), ("005180", "빙그레"), ("000070", "삼양홀딩스"),
+        ("145990", "삼양사"), ("001680", "대상"), ("011210", "현대위아"),
+        ("064960", "SNT모티브"), ("267270", "HD현대건설기계"), ("042670", "HD현대인프라코어"),
+        ("017800", "현대엘리베이터"), ("298040", "효성중공업"), ("298020", "효성티앤씨"),
+        ("010120", "LS ELECTRIC"), ("006260", "LS"), ("000150", "두산"),
+        ("010620", "HD현대미포"), ("011790", "SKC"), ("014820", "동원시스템즈"),
+        ("285130", "SK케미칼"), ("005070", "코스모신소재"), ("014680", "한솔케미칼"),
+        ("069260", "휴켐스"), ("002380", "KCC"), ("093370", "후성"),
+        ("020150", "롯데에너지머티리얼즈"), ("103140", "풍산"), ("000670", "영풍"),
+        ("036460", "한국가스공사"), ("018670", "SK가스"), ("042700", "한미반도체"),
+        ("000990", "DB하이텍"), ("030000", "제일기획"), ("375500", "DL이앤씨"),
+        ("000210", "DL"), ("294870", "HDC현대산업개발"), ("001740", "SK네트웍스"),
+        ("002240", "고려제강"), ("000240", "한국앤컴퍼니"), ("008930", "한미사이언스"),
+        ("019170", "신풍제약"), ("170900", "동아에스티"), ("000640", "동아쏘시오홀딩스"),
     ],
 }
 
@@ -211,24 +250,70 @@ def _stage1_fdr(mkt, min_cap_eok, min_turnover_eok):
 
 
 def _stage1_fallback_yf(mkt, min_cap_eok, min_turnover_eok, status_ph):
-    """KRX 접근 불가 시(예: Cloud 해외 IP) 대표 종목을 yfinance로 실시간 조회."""
-    out = []
+    """KRX 접근 불가 시(로컬·Cloud 공통) 대표 종목을 yfinance로 실시간 조회(병렬)."""
     tickers = _FALLBACK_TICKERS.get(mkt, [])
-    for i, (code, name) in enumerate(tickers, 1):
-        status_ph.info(f"1단계 | {mkt}: 대표종목 조회 중 {i}/{len(tickers)} (yfinance 폴백)")
-        sym = code + (".KS" if mkt == "KOSPI" else ".KQ")
-        cap, turnover = _yf_cap_turnover(sym)
-        if not cap:
-            continue
-        cap_eok = cap / 1e8
-        turnover_eok = (turnover or 0) / 1e8
-        if cap_eok >= min_cap_eok and turnover_eok >= min_turnover_eok:
-            out.append({
-                "ticker_krx": code, "종목명": name, "시장": mkt,
-                "시총(억)": round(cap_eok, 0),
-                "거래대금(억)": round(turnover_eok, 1),
-            })
+    total = len(tickers)
+    suffix = ".KS" if mkt == "KOSPI" else ".KQ"
+
+    def _one(item):
+        code, name = item
+        cap, turnover = _yf_cap_turnover(code + suffix)
+        return code, name, cap, turnover
+
+    out = []
+    done = 0
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = [ex.submit(_one, t) for t in tickers]
+        for fut in as_completed(futures):
+            done += 1
+            if done % 5 == 0 or done == total:
+                status_ph.info(f"1단계 | {mkt}: 대표종목 조회 {done}/{total} (yfinance)")
+            code, name, cap, turnover = fut.result()
+            if not cap:
+                continue
+            cap_eok = cap / 1e8
+            turnover_eok = (turnover or 0) / 1e8
+            if cap_eok >= min_cap_eok and turnover_eok >= min_turnover_eok:
+                out.append({
+                    "ticker_krx": code, "종목명": name, "시장": mkt,
+                    "시총(억)": round(cap_eok, 0),
+                    "거래대금(억)": round(turnover_eok, 1),
+                })
     return out
+
+
+def _load_universe() -> dict | None:
+    """로컬에서 생성·커밋한 KRX 유니버스 스냅샷(assets/krx_universe.json)을 읽는다."""
+    try:
+        return json.loads(_UNIVERSE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _stage1_fallback(mkt, min_cap_eok, min_turnover_eok, status_ph):
+    """KRX 접근 불가 시 폴백.
+    1순위: 번들 유니버스(전체 코스피/코스닥 스냅샷)로 필터.
+    2순위: 유니버스 파일이 없으면 대표 40종목을 yfinance 실시간 조회.
+    """
+    uni = _load_universe()
+    if uni and mkt in uni:
+        rows = []
+        for r in uni[mkt]:
+            cap_eok = float(r.get("marcap_eok") or 0)
+            turn_eok = float(r.get("amount_eok") or 0)
+            if cap_eok >= min_cap_eok and turn_eok >= min_turnover_eok:
+                rows.append({
+                    "ticker_krx": str(r.get("code", "")).zfill(6),
+                    "종목명": r.get("name", r.get("code", "")),
+                    "시장": mkt,
+                    "시총(억)": round(cap_eok, 0),
+                    "거래대금(억)": round(turn_eok, 1),
+                })
+        if rows:
+            return rows
+
+    # 유니버스 파일이 없을 때만: 대표 40종목 yfinance 실시간
+    return _stage1_fallback_yf(mkt, min_cap_eok, min_turnover_eok, status_ph)
 
 
 def _stage1_filter(
@@ -251,15 +336,23 @@ def _stage1_filter(
             rows = _stage1_fdr(mkt, min_cap_eok, min_turnover_eok)
         if rows is None:
             used_fallback = True
-            rows = _stage1_fallback_yf(mkt, min_cap_eok, min_turnover_eok, status_ph)
+            rows = _stage1_fallback(mkt, min_cap_eok, min_turnover_eok, status_ph)
 
         candidates.extend(rows or [])
 
     if used_fallback:
-        st.caption(
-            "ℹ️ 실시간 KRX 조회가 제한되어 대표 종목 예시로 스크리닝했습니다 "
-            "(시총·거래대금·재무는 모두 yfinance 실시간)."
-        )
+        uni = _load_universe()
+        asof = uni.get("_asof", "") if uni else ""
+        if uni:
+            st.caption(
+                f"ℹ️ 해외 배포 환경에서 실시간 KRX 조회가 제한되어, 종목 유니버스는 "
+                f"KRX 스냅샷({asof} 기준)을 사용했습니다. 재무·가격은 yfinance 실시간입니다."
+            )
+        else:
+            st.caption(
+                "ℹ️ 실시간 KRX 조회가 제한되어 대표 종목으로 스크리닝했습니다 "
+                "(시총·거래대금·재무 모두 yfinance 실시간)."
+            )
 
     return candidates
 
@@ -496,17 +589,6 @@ def _show_results(results: list[dict], state) -> None:
     df = df.sort_values("시총(억)", ascending=False).reset_index(drop=True)
 
     st.dataframe(df, use_container_width=True, height=min(420, 55 + 35 * len(df)))
-    st.markdown("---")
-
-    if st.button(
-        "Step 2 DART 분석으로 ↗",
-        key="m1_2_dart_btn",
-        use_container_width=True,
-        type="primary",
-    ):
-        ticker_list = [r["ticker_krx"] for r in results]
-        st.session_state["dart_candidate_tickers"] = ticker_list
-        st.success(f"{len(ticker_list)}개 종목이 Step 2 분석 목록에 저장되었습니다.")
 
     # ── AI 종합 해석 ─────────────────────────────────────────────────
     st.markdown("---")
@@ -600,9 +682,8 @@ def render(state) -> None:
             min_turnover = st.number_input(
                 "당일 거래대금 최소 (억원)", value=30, step=10, min_value=0, key="m1_2_turn"
             )
-        markets = st.multiselect(
-            "대상 시장", ["KOSPI", "KOSDAQ"], default=["KOSPI"], key="m1_2_markets"
-        )
+        markets = ["KOSPI"]
+        st.caption("대상 시장: 코스피")
 
         st.markdown("---")
         st.markdown("**재무 조건 (체크 해제 시 해당 조건 무시)**")
