@@ -108,7 +108,128 @@ SECTOR_HIERARCHY: dict[str, dict] = {
 }
 
 
-# ── 1단계: 시총·거래대금 필터 (pykrx 우선, FDR 폴백) ──────────────────
+# ── 1단계: 시총·거래대금 필터 (pykrx → FDR → yfinance 큐레이션 폴백) ────
+# Streamlit Cloud 등 해외 서버에서는 KRX(data.krx.co.kr)가 IP를 차단해
+# pykrx·FDR가 모두 실패할 수 있다. 이때 대표 종목(코드·종목명만 고정)에 대해
+# yfinance로 시총·거래대금을 실시간 조회하는 폴백으로 빈 화면을 방지한다.
+
+# 대표 대형주 — 코드·종목명은 안정적, 시총·거래대금은 yfinance 실시간 조회
+_FALLBACK_TICKERS: dict[str, list[tuple[str, str]]] = {
+    "KOSPI": [
+        ("005930", "삼성전자"), ("000660", "SK하이닉스"), ("373220", "LG에너지솔루션"),
+        ("207940", "삼성바이오로직스"), ("005380", "현대차"), ("000270", "기아"),
+        ("068270", "셀트리온"), ("105560", "KB금융"), ("005490", "POSCO홀딩스"),
+        ("035420", "NAVER"), ("055550", "신한지주"), ("006400", "삼성SDI"),
+        ("035720", "카카오"), ("051910", "LG화학"), ("012330", "현대모비스"),
+        ("028260", "삼성물산"), ("086790", "하나금융지주"), ("015760", "한국전력"),
+        ("033780", "KT&G"), ("066570", "LG전자"), ("017670", "SK텔레콤"),
+        ("096770", "SK이노베이션"), ("259960", "크래프톤"), ("316140", "우리금융지주"),
+        ("032830", "삼성생명"), ("018260", "삼성에스디에스"), ("010130", "고려아연"),
+        ("009150", "삼성전기"), ("034730", "SK"), ("010950", "S-Oil"),
+    ],
+    "KOSDAQ": [
+        ("247540", "에코프로비엠"), ("086520", "에코프로"), ("196170", "알테오젠"),
+        ("028300", "HLB"), ("277810", "레인보우로보틱스"), ("348370", "엔켐"),
+        ("263750", "펄어비스"), ("058470", "리노공업"), ("240810", "원익IPS"),
+        ("357780", "솔브레인"),
+    ],
+}
+
+
+def _yf_cap_turnover(sym: str) -> tuple[float | None, float | None]:
+    """yfinance로 (시가총액 원, 당일 거래대금 원)을 조회. 실패 시 (None, None)."""
+    cap = price = vol = None
+    try:
+        fi = yf.Ticker(sym).fast_info
+        cap = getattr(fi, "market_cap", None)
+        price = getattr(fi, "last_price", None)
+        vol = getattr(fi, "last_volume", None)
+    except Exception:
+        pass
+    if not cap:
+        try:
+            info = yf.Ticker(sym).info
+            cap = info.get("marketCap")
+            price = info.get("currentPrice") or info.get("regularMarketPrice")
+            vol = info.get("volume") or info.get("regularMarketVolume")
+        except Exception:
+            pass
+    turnover = (price * vol) if (price and vol) else None
+    return cap, turnover
+
+
+def _stage1_pykrx(mkt, base_date, min_cap_eok, min_turnover_eok):
+    """pykrx 조회. 성공 시 list, 실패/빈 결과 시 None."""
+    try:
+        from pykrx import stock
+        cap = stock.get_market_cap_by_ticker(base_date, market=mkt, alternative=True)
+        if cap is None or cap.empty:
+            return None
+        cap = cap.copy()
+        cap["시총_억"]     = pd.to_numeric(cap["시가총액"], errors="coerce") / 1e8
+        cap["거래대금_억"] = pd.to_numeric(cap["거래대금"], errors="coerce") / 1e8
+        cap = cap[(cap["시총_억"] >= min_cap_eok) &
+                  (cap["거래대금_억"] >= min_turnover_eok)]
+        out = []
+        for code, row in cap.iterrows():
+            code = str(code).zfill(6)
+            try:
+                name = stock.get_market_ticker_name(code)
+            except Exception:
+                name = code
+            out.append({
+                "ticker_krx": code, "종목명": name, "시장": mkt,
+                "시총(억)": round(float(row["시총_억"]), 0),
+                "거래대금(억)": round(float(row["거래대금_억"]), 1),
+            })
+        return out
+    except Exception:
+        return None
+
+
+def _stage1_fdr(mkt, min_cap_eok, min_turnover_eok):
+    """FinanceDataReader 조회. 성공 시 list, 실패/빈 결과 시 None."""
+    try:
+        import FinanceDataReader as fdr
+        df = fdr.StockListing(mkt)
+        if df is None or df.empty:
+            return None
+        df = df.copy()
+        df["시총_억"]     = pd.to_numeric(df["Marcap"], errors="coerce") / 1e8
+        df["거래대금_억"] = pd.to_numeric(df["Amount"], errors="coerce") / 1e8
+        df = df[(df["시총_억"] >= min_cap_eok) &
+                (df["거래대금_억"] >= min_turnover_eok)]
+        return [{
+            "ticker_krx": str(row.get("Code", "")).zfill(6),
+            "종목명": str(row.get("Name", "")),
+            "시장": mkt,
+            "시총(억)": round(float(row["시총_억"]), 0),
+            "거래대금(억)": round(float(row["거래대금_억"]), 1),
+        } for _, row in df.iterrows()]
+    except Exception:
+        return None
+
+
+def _stage1_fallback_yf(mkt, min_cap_eok, min_turnover_eok, status_ph):
+    """KRX 접근 불가 시(예: Cloud 해외 IP) 대표 종목을 yfinance로 실시간 조회."""
+    out = []
+    tickers = _FALLBACK_TICKERS.get(mkt, [])
+    for i, (code, name) in enumerate(tickers, 1):
+        status_ph.info(f"1단계 | {mkt}: 대표종목 조회 중 {i}/{len(tickers)} (yfinance 폴백)")
+        sym = code + (".KS" if mkt == "KOSPI" else ".KQ")
+        cap, turnover = _yf_cap_turnover(sym)
+        if not cap:
+            continue
+        cap_eok = cap / 1e8
+        turnover_eok = (turnover or 0) / 1e8
+        if cap_eok >= min_cap_eok and turnover_eok >= min_turnover_eok:
+            out.append({
+                "ticker_krx": code, "종목명": name, "시장": mkt,
+                "시총(억)": round(cap_eok, 0),
+                "거래대금(억)": round(turnover_eok, 1),
+            })
+    return out
+
 
 def _stage1_filter(
     markets: list[str],
@@ -120,66 +241,25 @@ def _stage1_filter(
 
     base_date = datetime.date.today().strftime("%Y%m%d")
     candidates: list[dict] = []
+    used_fallback = False
 
     for mkt in markets:
         status_ph.info(f"1단계 | {mkt}: 전체 종목 시총·거래대금 조회 중...")
 
-        # ── 1순위: pykrx (KRX getJsonData 경로, 상대적으로 안정적) ──
-        try:
-            from pykrx import stock
-            cap = stock.get_market_cap_by_ticker(base_date, market=mkt, alternative=True)
-            if cap is not None and not cap.empty:
-                cap = cap.copy()
-                cap["시총_억"]     = pd.to_numeric(cap["시가총액"], errors="coerce") / 1e8
-                cap["거래대금_억"] = pd.to_numeric(cap["거래대금"], errors="coerce") / 1e8
-                n_all = len(cap)
-                cap = cap[(cap["시총_억"] >= min_cap_eok) &
-                          (cap["거래대금_억"] >= min_turnover_eok)]
-                status_ph.info(f"1단계 | {mkt}: {n_all:,}개 → {len(cap):,}개 통과 (pykrx)")
+        rows = _stage1_pykrx(mkt, base_date, min_cap_eok, min_turnover_eok)
+        if rows is None:
+            rows = _stage1_fdr(mkt, min_cap_eok, min_turnover_eok)
+        if rows is None:
+            used_fallback = True
+            rows = _stage1_fallback_yf(mkt, min_cap_eok, min_turnover_eok, status_ph)
 
-                for code, row in cap.iterrows():
-                    code = str(code).zfill(6)
-                    try:
-                        name = stock.get_market_ticker_name(code)
-                    except Exception:
-                        name = code
-                    candidates.append({
-                        "ticker_krx": code,
-                        "종목명": name,
-                        "시장": mkt,
-                        "시총(억)": round(float(row["시총_억"]), 0),
-                        "거래대금(억)": round(float(row["거래대금_억"]), 1),
-                    })
-                continue  # 이 시장 완료 → FDR 폴백 불필요
-        except Exception as e:
-            status_ph.info(f"1단계 | {mkt}: pykrx 실패({str(e)[:40]}) → FDR 재시도")
+        candidates.extend(rows or [])
 
-        # ── 2순위: FinanceDataReader 폴백 ──
-        try:
-            import FinanceDataReader as fdr
-            df = fdr.StockListing(mkt)
-        except Exception as e:
-            st.warning(f"{mkt} 종목 목록 조회 실패: {e}")
-            continue
-        if df is None or df.empty:
-            st.warning(f"{mkt} 종목 목록이 비어 있습니다.")
-            continue
-
-        df = df.copy()
-        df["시총_억"]     = pd.to_numeric(df["Marcap"], errors="coerce") / 1e8
-        df["거래대금_억"] = pd.to_numeric(df["Amount"], errors="coerce") / 1e8
-        df = df[(df["시총_억"] >= min_cap_eok) &
-                (df["거래대금_억"] >= min_turnover_eok)]
-
-        for _, row in df.iterrows():
-            code = str(row.get("Code", "")).zfill(6)
-            candidates.append({
-                "ticker_krx": code,
-                "종목명": str(row.get("Name", code)),
-                "시장": mkt,
-                "시총(억)": round(float(row["시총_억"]), 0),
-                "거래대금(억)": round(float(row["거래대금_억"]), 1),
-            })
+    if used_fallback:
+        st.caption(
+            "ℹ️ 실시간 KRX 조회가 제한되어 대표 종목 예시로 스크리닝했습니다 "
+            "(시총·거래대금·재무는 모두 yfinance 실시간)."
+        )
 
     return candidates
 
